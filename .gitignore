@@ -1,0 +1,13 @@
+# Generated diagnostic reports
+reports/*.txt
+
+# Editor / OS clutter
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary files
+*.tmp
+*.log
