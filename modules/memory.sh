@@ -15,6 +15,7 @@ _meminfo_value() {
 # memory_info - run the memory diagnostic.
 memory_info() {
     section "4. MEMORY INFORMATION"
+    mark_ran memory
 
     local meminfo="${LDT_MEMINFO:-/proc/meminfo}"
     if ! has_file "$meminfo"; then
@@ -54,6 +55,12 @@ memory_info() {
     emit_kv "Available RAM" "$(human_kb "$avail")"
     emit_kv "RAM usage"     "${used_pct}%"
 
+    data_set memory.total_kb "$total"
+    data_set memory.used_kb "$used"
+    data_set memory.free_kb "${free:-0}"
+    data_set memory.available_kb "$avail"
+    data_set memory.usage_percent "$used_pct"
+
     # Swap.
     if is_number "$swap_total" && (( swap_total > 0 )); then
         swap_used=$(( swap_total - ${swap_free:-0} ))
@@ -62,12 +69,18 @@ memory_info() {
         emit_kv "Total swap" "$(human_kb "$swap_total")"
         emit_kv "Used swap"  "$(human_kb "$swap_used")"
         emit_kv "Swap usage" "${swap_pct}%"
+        data_set memory.swap_total_kb "$swap_total"
+        data_set memory.swap_used_kb "$swap_used"
+        data_set memory.swap_percent "$swap_pct"
         if (( swap_pct >= 80 )); then
             emit_warn "High swap usage: ${swap_pct}%."
             add_warning WARN "Swap usage is high (${swap_pct}%)."
         fi
     else
         emit_kv "Swap" "not configured"
+        data_set memory.swap_total_kb "0"
+        data_set memory.swap_used_kb "0"
+        data_set memory.swap_percent "0"
     fi
 
     # Threshold based evaluation.

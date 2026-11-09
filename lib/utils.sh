@@ -25,10 +25,37 @@ LDT_VERSION="1.0.0"
 # REPORT_BUF accumulates the plain-text lines that will be written to the report.
 REPORT_BUF=()
 # WARNINGS holds "LEVEL|message" entries detected during diagnostics.
+# LEVEL is one of INFO, WARN or CRIT.
 WARNINGS=()
-# Counters for the final score.
+# Counters for the final score (INFO findings do not affect the score).
 WARN_COUNT=0
 CRIT_COUNT=0
+
+# ---------------------------------------------------------------------------
+# Structured diagnostic data.
+#
+# Modules record machine-readable findings here in addition to the human
+# readable text buffer. The JSON exporter and the diagnostic summary read
+# from these. Scalar values use dotted keys (e.g. "cpu.model"); list values
+# use the dedicated arrays below so that record separators stay explicit.
+# ---------------------------------------------------------------------------
+declare -A LDT_DATA=()
+# Names of the diagnostic sections that actually ran this session.
+declare -a LDT_RAN=()
+# "filesystem|size_kb|used_kb|avail_kb|use_percent|mount"
+declare -a DISK_ROWS=()
+# "filesystem|use_percent|mount"
+declare -a INODE_ROWS=()
+# Failed systemd unit names.
+declare -a SVC_FAILED_LIST=()
+# "name|state|ipv4|ipv6"
+declare -a NET_IFACES=()
+# DNS server addresses.
+declare -a NET_DNS_LIST=()
+# "name|value_c"
+declare -a TEMP_ROWS=()
+# "name|capacity_percent|status"
+declare -a BATT_ROWS=()
 
 # reset_state - clear all accumulated diagnostic state.
 reset_state() {
@@ -36,6 +63,39 @@ reset_state() {
     WARNINGS=()
     WARN_COUNT=0
     CRIT_COUNT=0
+    LDT_DATA=()
+    LDT_RAN=()
+    DISK_ROWS=()
+    INODE_ROWS=()
+    SVC_FAILED_LIST=()
+    NET_IFACES=()
+    NET_DNS_LIST=()
+    TEMP_ROWS=()
+    BATT_ROWS=()
+}
+
+# data_set KEY VALUE - store a structured scalar (empty VALUE clears it).
+data_set() {
+    LDT_DATA["$1"]="$2"
+}
+
+# data_get KEY - print a structured scalar (empty string when unset).
+data_get() {
+    printf '%s' "${LDT_DATA[$1]:-}"
+}
+
+# mark_ran SECTION - record that a diagnostic section executed.
+mark_ran() {
+    LDT_RAN+=("$1")
+}
+
+# has_ran SECTION - return 0 if the given section executed this session.
+has_ran() {
+    local s
+    for s in "${LDT_RAN[@]}"; do
+        [[ "$s" == "$1" ]] && return 0
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -120,18 +180,24 @@ note() {
 # ---------------------------------------------------------------------------
 # Warning collection
 # ---------------------------------------------------------------------------
-# add_warning LEVEL MESSAGE - record a warning/critical finding.
-# LEVEL is WARN or CRIT.
+# add_warning LEVEL MESSAGE - record a finding.
+# LEVEL is INFO, WARN or CRIT. Only WARN/CRIT affect the health score.
 add_warning() {
     local level="$1"
     shift
     local message="$*"
     WARNINGS+=("${level}|${message}")
-    if [[ "$level" == "CRIT" ]]; then
-        CRIT_COUNT=$((CRIT_COUNT + 1))
-    else
-        WARN_COUNT=$((WARN_COUNT + 1))
-    fi
+    case "$level" in
+        CRIT) CRIT_COUNT=$((CRIT_COUNT + 1)) ;;
+        WARN) WARN_COUNT=$((WARN_COUNT + 1)) ;;
+        INFO) : ;;  # informational only
+        *)    WARN_COUNT=$((WARN_COUNT + 1)) ;;
+    esac
+}
+
+# add_info MESSAGE - record an informational (non-scoring) finding.
+add_info() {
+    add_warning INFO "$@"
 }
 
 # ---------------------------------------------------------------------------

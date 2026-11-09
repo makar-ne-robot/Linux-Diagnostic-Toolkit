@@ -60,6 +60,12 @@ _net_ipv6() {
 # network_check - run the network diagnostic.
 network_check() {
     section "7. NETWORK"
+    mark_ran network
+    if has_cmd ip; then
+        data_set network.has_ip_tool "1"
+    else
+        data_set network.has_ip_tool "0"
+    fi
 
     # ------------------------------------------------------------------
     # Interfaces
@@ -77,6 +83,7 @@ network_check() {
         state="$(_net_link_state "$iface")"
         v4="$(_net_ipv4 "$iface")"
         v6="$(_net_ipv6 "$iface")"
+        NET_IFACES+=("$iface|$state|$v4|$v6")
         local desc="Interface $iface: state=$state"
         [[ -n "$v4" ]] && desc+="  IPv4=$v4"
         [[ -n "$v6" ]] && desc+="  IPv6=$v6"
@@ -100,6 +107,7 @@ network_check() {
     if has_cmd ip; then
         local route
         route="$(ip route show default 2>/dev/null | head -n1)"
+        data_set network.default_route "$route"
         if [[ -n "$route" ]]; then
             emit_ok "Default route: $route"
         else
@@ -113,9 +121,17 @@ network_check() {
     # ------------------------------------------------------------------
     if has_file /etc/resolv.conf; then
         local ns
-        ns="$(awk '/^[[:space:]]*nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null | paste -sd, -)"
-        if [[ -n "$ns" ]]; then
-            emit_kv "DNS servers" "$ns"
+        ns="$(awk '/^[[:space:]]*nameserver/ {print $2}' /etc/resolv.conf 2>/dev/null)"
+        NET_DNS_LIST=()
+        local server
+        while IFS= read -r server; do
+            [[ -z "$server" ]] && continue
+            NET_DNS_LIST+=("$server")
+        done <<< "$ns"
+        if (( ${#NET_DNS_LIST[@]} > 0 )); then
+            local joined
+            joined="$(printf '%s,' "${NET_DNS_LIST[@]}")"
+            emit_kv "DNS servers" "${joined%,}"
         else
             emit_warn "No nameservers configured in /etc/resolv.conf."
         fi
@@ -125,15 +141,19 @@ network_check() {
         if has_cmd timeout; then
             if timeout 5 getent hosts "$_NET_DNS_TARGET" >/dev/null 2>&1; then
                 emit_ok "DNS resolution works (resolved $_NET_DNS_TARGET)."
+                data_set network.dns_resolution "1"
             else
                 emit_warn "DNS resolution failed for $_NET_DNS_TARGET."
                 add_warning WARN "DNS resolution appears to be failing."
+                data_set network.dns_resolution "0"
             fi
         elif getent hosts "$_NET_DNS_TARGET" >/dev/null 2>&1; then
             emit_ok "DNS resolution works."
+            data_set network.dns_resolution "1"
         else
             emit_warn "DNS resolution failed for $_NET_DNS_TARGET."
             add_warning WARN "DNS resolution appears to be failing."
+            data_set network.dns_resolution "0"
         fi
     else
         emit_muted "getent not available; DNS resolution check skipped."
@@ -153,9 +173,11 @@ network_check() {
         fi
         if (( ping_ok )); then
             emit_ok "External connectivity OK (ping $_NET_PING_TARGET)."
+            data_set network.external_reachable "1"
         else
             emit_warn "Could not reach $_NET_PING_TARGET (host may be offline or ICMP blocked)."
             add_warning WARN "External network connectivity check failed."
+            data_set network.external_reachable "0"
         fi
     else
         emit_muted "ping not available; external connectivity check skipped."

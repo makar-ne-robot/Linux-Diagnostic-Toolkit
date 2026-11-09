@@ -51,9 +51,14 @@ _services_systemd() {
 
     local failed_list
     failed_list="$(systemctl list-units --type=service --state=failed --no-legend --no-pager --plain 2>/dev/null || true)"
+    SVC_FAILED_LIST=()
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         failed=$(( failed + 1 ))
+        # The first whitespace-delimited field is the unit name.
+        # shellcheck disable=SC2086
+        set -- $line
+        SVC_FAILED_LIST+=("${1:-}")
     done <<< "$failed_list"
 
     emit_kv "Init system"      "systemd"
@@ -61,12 +66,22 @@ _services_systemd() {
     emit_kv "Running services" "$running"
     emit_kv "Failed services"  "$failed"
 
-    # Overall systemd state, when available.
-    if systemctl is-system-running >/dev/null 2>&1; then
-        local sys_state
-        sys_state="$(systemctl is-system-running 2>/dev/null || true)"
-        [[ -n "$sys_state" ]] && emit_kv "System state" "$sys_state"
+    # Overall systemd manager state. NOTE: `is-system-running` exits non-zero
+    # for states such as "degraded" and "maintenance", so we must NOT gate the
+    # capture on its exit status - only on whether it produced any output.
+    local sys_state
+    sys_state="$(systemctl is-system-running 2>/dev/null || true)"
+    if [[ -n "$sys_state" ]]; then
+        emit_kv "System state" "$sys_state"
     fi
+
+    # Structured data for JSON export / summary.
+    mark_ran services
+    data_set services.init_system "systemd"
+    data_set services.manager_state "$sys_state"
+    data_set services.total "$total"
+    data_set services.running "$running"
+    data_set services.failed "$failed"
 
     if (( failed > 0 )); then
         emit_warn "$failed failed service(s) detected:"
@@ -87,6 +102,8 @@ _services_other() {
     emit_kv "Init system" "$init"
     emit_info "Detailed service inspection is only supported on systemd."
     emit_info "No service state was modified."
+    mark_ran services
+    data_set services.init_system "$init"
 }
 
 # services_check - run the services diagnostic.

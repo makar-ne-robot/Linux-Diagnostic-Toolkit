@@ -30,6 +30,7 @@ _df_inode() {
 # disk_check - run the disk diagnostic.
 disk_check() {
     section "5. DISK USAGE"
+    mark_ran disk
 
     if ! has_cmd df; then
         emit_warn "'df' is not available; disk diagnostics skipped."
@@ -56,6 +57,7 @@ disk_check() {
         row="$(printf '%-24s %10s %10s %10s %6s  %s' "$fs" "$size" "$used" "$avail" "$usepct" "$mount")"
 
         local pct="${usepct%\%}"
+        DISK_ROWS+=("$fs|$size|$used|$avail|$pct|$mount")
         if is_number "$pct" && (( pct >= 90 )); then
             emit_err "  $row"
             add_warning CRIT "Filesystem $mount is ${usepct} full."
@@ -90,6 +92,7 @@ disk_check() {
         # Some pseudo filesystems report "-" for inode usage.
         [[ "$usepct_i" == "-" ]] && continue
         local pct_i="${usepct_i%\%}"
+        INODE_ROWS+=("$fs_i|$pct_i|$mount_i")
         local row_i
         row_i="$(printf '%-24s %6s  %s' "$fs_i" "$usepct_i" "$mount_i")"
         if is_number "$pct_i" && (( pct_i >= 90 )); then

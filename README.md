@@ -1,28 +1,33 @@
 # Linux Diagnostic Toolkit
 
 A modular, safe, read-only **CLI utility written in Bash** for diagnosing the
-health of a Linux system and producing a structured plain-text report.
+health of a Linux system and producing a structured report in **TXT** or
+**JSON**.
 
-It inspects the system, CPU, memory, disks, services and network, flags
-potential problems with color-coded severity, and writes a timestamped report
-you can attach to a ticket or keep for later reference.
+It inspects the system, CPU, memory, disks, services, network, CPU
+temperature and battery, flags potential problems with color-coded severity,
+and writes a timestamped report you can attach to a ticket or keep for later
+reference.
 
 > The toolkit never modifies your system: no package installation, no `sudo`,
-> no service state changes, no network reconfiguration.
+> no service state changes, no network or power configuration changes.
 
 ---
 
 ## Table of contents
 
 - [Features](#features)
-- [Screenshot](#screenshot)
+- [Example terminal output](#example-terminal-output)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Diagnostic scope](#diagnostic-scope)
 - [Command-line flags](#command-line-flags)
-- [Example report](#example-report)
+- [Health Score](#health-score)
+- [Example reports](#example-reports)
 - [Project structure](#project-structure)
 - [How it works](#how-it-works)
+- [Privacy & Security](#privacy--security)
 - [Testing](#testing)
 - [Compatibility](#compatibility)
 - [Troubleshooting](#troubleshooting)
@@ -35,25 +40,32 @@ you can attach to a ticket or keep for later reference.
 | Area | What is checked |
 |------|-----------------|
 | **System** | Distribution, OS version, kernel, architecture, hostname, uptime, init system |
-| **CPU** | Model, physical/logical cores, architecture, load average (1/5/15 min), running processes |
-| **Memory** | Total/used/free/available RAM, swap usage, usage percentage, high-usage warnings |
+| **CPU** | Model, physical/logical cores, architecture, load average (1/5/15 min), processes |
+| **Memory** | Total/used/free/available RAM, swap, usage %, high-usage warnings |
 | **Disk** | Mounted filesystems, size/used/available, usage %, inode usage, >80% / >90% alerts |
-| **Services** | Init system detection, systemd active/failed units, `systemd` overall state |
-| **Network** | Interfaces and link state, IPv4/IPv6 addresses, default route, DNS servers/resolution, external reachability |
+| **Services** | Init system detection, systemd manager state (incl. `degraded`), active/failed units |
+| **Network** | Interfaces and link state, IPv4/IPv6, default route, DNS resolution, external reachability |
+| **Temperature** | `/sys/class/thermal` and `/sys/class/hwmon` sensors, configurable thresholds |
+| **Battery** | `/sys/class/power_supply` batteries, charge level, charging status, multiple batteries |
 
 Additional highlights:
 
 - **Modular architecture** — one module per diagnostic domain.
+- **TXT and JSON reports** — machine-readable JSON export with no hard `jq`
+  dependency (plain Bash; `jq`/`python3` are only used by the tests).
+- **Per-module selection** — run one or several modules from the CLI.
 - **ANSI colors** with automatic disable for non-TTY output and `NO_COLOR`.
-- **TXT reports** with a timestamped filename, a warnings section and a
-  health score.
-- **Non-interactive flags** for scripting (`--full`, `--report`, `--output`).
-- **Graceful degradation** — missing optional tools never crash the tool.
+- **Heuristic Health Score** with an explicit disclaimer.
+- **Graceful degradation** — missing optional tools or sensors never crash the
+  tool and are reported as `UNKNOWN` / `UNAVAILABLE`, never as `OK`.
 - **No external dependencies** beyond standard Linux utilities.
 
 ---
 
-## Screenshot
+## Example terminal output
+
+> The following is anonymised sample output (hostname, addresses, CPU model and
+> kernel are illustrative placeholders).
 
 ```
 +======================================================+
@@ -68,63 +80,68 @@ Additional highlights:
 [5] Services diagnostics
 [6] Network diagnostics
 [7] System information
-[8] Generate diagnostic report
-[9] Exit
+[8] CPU temperature
+[9] Battery diagnostics
+[10] Generate diagnostic report
+[11] Exit
 
 Select an option: 1
 
 --------------------------------------------------------------
 2. SYSTEM INFORMATION
 --------------------------------------------------------------
-  Distribution: Arch Linux
-  OS Version: rolling
-  Kernel: 7.2.14-arch1-1
+  Distribution: ExampleOS 1.0
+  OS Version: 1.0
+  Kernel: 6.6.0-generic
   Architecture: x86_64
-  Hostname: thinkpad-x390
-  Uptime: 1 day, 32 minutes
+  Hostname: workstation-01
+  Uptime: 1 day, 2 hours, 40 minutes
   Init system: systemd
 
 --------------------------------------------------------------
 3. CPU INFORMATION
 --------------------------------------------------------------
-  Model: Intel(R) Core(TM) i5-8265U CPU @ 1.60GHz
+  Model: Example CPU @ 2.40GHz
   Architecture: x86_64
   Physical cores: 4
   Logical cores: 8
-  Load average: 1m=1.27  5m=1.11  15m=0.72
-  Processes: 1/998 (runnable/total)
+  Load average: 1m=0.42  5m=0.31  15m=0.28
+  Processes: 1/321 (runnable/total)
 CPU load is within expected range.
 
 --------------------------------------------------------------
 4. MEMORY INFORMATION
 --------------------------------------------------------------
-  Total RAM: 7.44 GiB
-  Used RAM: 3.41 GiB
-  Free RAM: 2.33 GiB
-  Available RAM: 4.03 GiB
-  RAM usage: 45%
-  Total swap: 3.72 GiB
-  Used swap: 0.00 KiB
+  Total RAM: 15.50 GiB
+  Used RAM: 5.10 GiB
+  Free RAM: 6.20 GiB
+  Available RAM: 10.40 GiB
+  RAM usage: 33%
   Swap usage: 0%
-Memory usage is normal (45%).
-
---------------------------------------------------------------
-5. DISK USAGE
---------------------------------------------------------------
-  Filesystem                 Size(1K)   Used(1K)  Avail(1K)   Use%  Mounted on
-  /dev/nvme0n1p2             32716560   23008248    8014208    75%  /
-  /dev/nvme0n1p3            210961996   68574776  131598152    35%  /home
-  /dev/nvme0n1p1              1046512      68572     977940     7%  /boot
-Checked 3 filesystem(s).
+Memory usage is normal (33%).
 
 --------------------------------------------------------------
 7. NETWORK
 --------------------------------------------------------------
-Interface wlp0s20f3: state=UP  IPv4=192.168.1.107/24
-  Default route: default via 192.168.1.1 dev wlp0s20f3
-  DNS servers: 192.168.1.1
+Interface eth0: state=UP  IPv4=10.0.0.42/24
+  Default route: default via 10.0.0.1 dev eth0
+  DNS servers: 10.0.0.1
 DNS resolution works (resolved example.com).
-External connectivity OK (ping 1.1.1.1).
+External connectivity OK.
+
++-----------------------------------+
+|        DIAGNOSTIC SUMMARY         |
++-----------------------------------+
+| System status       : OK          |
+| Disk usage          : OK          |
+| Memory usage        : OK          |
+| Services            : OK          |
+| Network             : OK          |
+| Temperature         : AVAILABLE   |
+| Battery             : NOT PRESENT |
++-----------------------------------+
+| Health Score        : 100/100     |
++-----------------------------------+
 ```
 
 ---
@@ -137,8 +154,8 @@ External connectivity OK (ping 1.1.1.1).
   `uptime`.
 - No root privileges. No third-party packages.
 
-The toolkit runs fine even if several of the optional tools are missing — it
-prints a clear notice and continues.
+The toolkit runs fine even if several optional tools are missing or if there
+are no temperature sensors / battery — it prints a clear notice and continues.
 
 ---
 
@@ -146,10 +163,10 @@ prints a clear notice and continues.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-user/linux-diagnostic-toolkit.git
-cd linux-diagnostic-toolkit
+git clone https://github.com/makar-ne-robot/Linux-Diagnostic-Toolkit.git
+cd Linux-Diagnostic-Toolkit
 
-# Make the entry point executable
+# Make the entry points executable
 chmod +x main.sh tests/test.sh
 ```
 
@@ -176,18 +193,13 @@ Run a full diagnostic without the menu:
 ./main.sh --full
 ```
 
-Run diagnostics and write a report file:
+Run diagnostics and write a report:
 
 ```bash
-./main.sh --report
-```
-
-Combine flags:
-
-```bash
-./main.sh --full --report
-./main.sh --full --no-color
+./main.sh --report                 # TXT report into ./reports/
+./main.sh --json                   # JSON report into ./reports/
 ./main.sh --full --output ./my-report.txt
+./main.sh --full --json --output ./report.json
 ```
 
 The toolkit can be launched from **any working directory** — it always resolves
@@ -196,30 +208,89 @@ written to `./reports/`, created automatically if missing.
 
 ---
 
+## Diagnostic scope
+
+Run only the modules you are interested in (they can be combined):
+
+```bash
+./main.sh --disk
+./main.sh --cpu
+./main.sh --memory
+./main.sh --network
+./main.sh --services
+./main.sh --system
+./main.sh --temperature
+./main.sh --battery
+
+# Combined
+./main.sh --disk --memory
+./main.sh --cpu --temperature
+./main.sh --disk --network --services
+```
+
+Each selected module runs independently; unselected modules are not executed.
+Module selection can be combined with report generation, e.g.
+`./main.sh --disk --network --json --output ./net.json`.
+
+---
+
 ## Command-line flags
 
 | Flag | Description |
 |------|-------------|
 | `--full` | Run the complete diagnostic suite in non-interactive mode. |
-| `--report` | Run diagnostics and write a plain-text (`.txt`) report. |
+| `--system`, `--cpu`, `--memory`, `--disk`, `--services`, `--network`, `--temperature`, `--battery` | Run only the named module(s). Can be combined. |
+| `--report` | Write a TXT report. |
+| `--json` | Write a JSON report (implies `--report`). |
+| `--output PATH` | Write the report to `PATH` (implies `--report`). If `PATH` is a directory, the default timestamped filename is created inside it. Paths with spaces are supported. |
+| `--output=PATH` | Same as above, `=` form. |
 | `--no-color` | Disable ANSI colored output. |
-| `--output PATH` | Write the report to `PATH`. If `PATH` is a directory, the default timestamped filename is used inside it. |
 | `-h`, `--help` | Show help and exit. |
 | `-v`, `--version` | Show version and exit. |
+
+Notes:
+
+- Supplying `--output PATH` (or `--json`) automatically enables report
+  generation, so `./main.sh --full --output report.txt` creates the report.
+- An existing target file is **never overwritten silently**: a notice is
+  printed to stderr before writing.
 
 Environment variables:
 
 | Variable | Effect |
 |----------|--------|
 | `NO_COLOR` | If set to any non-empty value, colors are disabled. |
-| `LDT_OUTPUT` | Alternative way to specify the report output path. |
+| `LDT_OUTPUT` | Default report path; overridden by `--output`. |
+| `LDT_TEMP_WARN` | Temperature warning threshold in °C (default `75`). |
+| `LDT_TEMP_CRIT` | Temperature critical threshold in °C (default `90`). |
 
 Exit codes: `0` on success, `2` for invalid CLI usage, `1` for report-write
 failures.
 
 ---
 
-## Example report
+## Health Score
+
+The toolkit reports a **heuristic** health score from `100` down to `0`:
+
+- every `WARNING` finding costs `5` points;
+- every `CRITICAL` finding costs `20` points;
+- informational messages do not affect the score.
+
+The score maps to one of four statuses: `HEALTHY`, `WARNING`, `CRITICAL`, or
+`UNKNOWN` (when no diagnostic data could be collected). Per-area statuses use
+the same vocabulary, and areas that could not be evaluated are shown as
+`UNKNOWN` / `UNAVAILABLE` rather than `OK`.
+
+> Health Score is a heuristic indicator based on detected diagnostic warnings.
+> It is not an objective measurement of hardware health or overall system
+> reliability.
+
+---
+
+## Example reports
+
+### TXT
 
 Reports are saved as `linux-diagnostic-report-YYYY-MM-DD_HH-MM-SS.txt`:
 
@@ -228,37 +299,42 @@ Reports are saved as `linux-diagnostic-report-YYYY-MM-DD_HH-MM-SS.txt`:
                   Linux Diagnostic Toolkit - DIAGNOSTIC REPORT
                             version 1.0.0
 ==============================================================================
-Generated : 2026-11-09 16:37:24 MSK
-Hostname  : thinkpad-x390
-Kernel    : Linux 7.2.14-arch1-1
+Generated : 2026-01-01 12:00:00 UTC
+Hostname  : workstation-01
+Kernel    : Linux 6.6.0-generic
 Tool      : Linux Diagnostic Toolkit 1.0.0
 
 --------------------------------------------------------------
 4. MEMORY INFORMATION
 --------------------------------------------------------------
-  Total RAM: 7.44 GiB
-  Used RAM: 3.41 GiB
-  Available RAM: 4.03 GiB
-  RAM usage: 45%
-  Swap usage: 0%
-Memory usage is normal (45%).
-...
+  Total RAM: 15.50 GiB
+  Used RAM: 5.10 GiB
+  Available RAM: 10.40 GiB
+  RAM usage: 33%
+Memory usage is normal (33%).
+
 ==============================================================================
-8. WARNINGS
+10. WARNINGS
 ==============================================================================
 [WARNING]  Filesystem / is 83% full.
 
 ==============================================================================
-9. OVERALL ASSESSMENT
+11. OVERALL ASSESSMENT
 ==============================================================================
-Warnings : 1
-Critical : 0
-Health   : 95/100 (GOOD)
+Informational : 0
+Warnings      : 1
+Critical      : 0
+Health Score  : 95/100 (heuristic)
+Status        : WARNING
 
-Result: System appears healthy. No action required.
+Note: Health Score is a heuristic indicator based on detected diagnostic
+warnings. It is not an objective measurement of hardware health or overall
+system reliability.
+
+Result: Minor issues detected. Review the warnings above.
 ```
 
-The report always follows the same structure:
+The report sections are:
 
 1. Header and generation date
 2. System information
@@ -267,15 +343,47 @@ The report always follows the same structure:
 5. Disk usage
 6. System services
 7. Network
-8. Warnings
-9. Overall assessment (health score)
+8. CPU temperature
+9. Battery
+10. Warnings (INFO / WARNING / CRITICAL)
+11. Overall assessment (status + heuristic health score)
+
+### JSON
+
+`--json` writes a structured document (saved as
+`linux-diagnostic-report-YYYY-MM-DD_HH-MM-SS.json`):
+
+```json
+{
+  "tool": { "name": "Linux Diagnostic Toolkit", "version": "1.0.0" },
+  "timestamp": "2026-01-01T12:00:00Z",
+  "system": { "distribution": "ExampleOS 1.0", "kernel": "6.6.0-generic" },
+  "cpu": { "logical_cores": 8, "load_average": { "1min": 0.42 } },
+  "memory": { "total_kb": 16252928, "usage_percent": 33 },
+  "disk": { "filesystems": [ { "mount": "/", "use_percent": 83 } ] },
+  "services": { "manager_state": "running", "failed": 0 },
+  "network": { "dns_resolution": true, "external_reachable": true },
+  "temperature": { "available": true, "sensors": [] },
+  "battery": { "available": false, "batteries": [] },
+  "warnings": [ { "level": "WARN", "message": "Filesystem / is 83% full." } ],
+  "health_score": {
+    "score": 95,
+    "type": "heuristic",
+    "status": "WARNING",
+    "explanation": "Health Score is a heuristic indicator ..."
+  }
+}
+```
+
+Numeric values are emitted as JSON numbers, missing values as `null`, strings
+are escaped, and list data is emitted as JSON arrays.
 
 ---
 
 ## Project structure
 
 ```
-linux-diagnostic-toolkit/
+Linux-Diagnostic-Toolkit/
 ├── main.sh              # CLI entry point, argument parsing, menu
 ├── modules/
 │   ├── system.sh        # distribution, kernel, uptime
@@ -283,14 +391,16 @@ linux-diagnostic-toolkit/
 │   ├── cpu.sh           # model, cores, load average
 │   ├── memory.sh        # RAM and swap
 │   ├── services.sh      # init system / systemd units
-│   └── network.sh       # interfaces, routes, DNS, connectivity
+│   ├── network.sh       # interfaces, routes, DNS, connectivity
+│   ├── temperature.sh   # thermal / hwmon sensors
+│   └── battery.sh       # power_supply batteries
 ├── lib/
 │   ├── colors.sh        # ANSI color handling
-│   ├── utils.sh         # shared helpers + output buffer
-│   └── report.sh        # report assembly and scoring
+│   ├── utils.sh         # shared helpers + structured data store
+│   └── report.sh        # TXT + JSON assembly, summary, health score
 ├── reports/             # generated reports (.gitkeep kept)
 ├── tests/
-│   └── test.sh          # self-contained test suite
+│   └── test.sh          # isolated test suite with mock commands
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -301,30 +411,78 @@ linux-diagnostic-toolkit/
 ## How it works
 
 Each module exposes a single public function (`system_info`, `cpu_info`,
-`memory_info`, `disk_check`, `services_check`, `network_check`). Modules emit
-output through helpers in `lib/utils.sh`:
+`memory_info`, `disk_check`, `services_check`, `network_check`,
+`temperature_check`, `battery_check`). Modules feed two sinks in
+`lib/utils.sh`:
 
-- `emit_*` prints a colored line **and** appends the plain version to an
-  in-memory report buffer.
-- `add_warning WARN|CRIT "message"` records findings used for the warnings
-  section and the health score.
+- **Human-readable text** — `emit_*` prints a colored line and appends the
+  plain version to the report buffer.
+- **Structured data** — `data_set KEY VALUE` (and list arrays such as
+  `DISK_ROWS`) record machine-readable findings used by the JSON exporter, the
+  summary box and the health score.
 
-`lib/report.sh` then assembles the header, buffered body, warnings and score
-into the final `.txt` file. This keeps terminal output and file output in sync
-without duplicating logic.
+`lib/report.sh` then assembles either the TXT document, the JSON document, or
+the terminal summary box from these shared sources, so TXT and JSON never
+diverge.
+
+---
+
+## Privacy & Security
+
+**What is collected.** All diagnostics are read from local, read-only sources:
+`/proc`, `/etc/os-release`, `/etc/resolv.conf`, `df`, `ip`, `getent`, one
+`ping`, systemd unit state, and `/sys` (thermal, hwmon, power_supply). No data
+leaves the machine.
+
+**What may appear in a report.** Reports can contain potentially sensitive or
+identifying information, including:
+
+- the **hostname**;
+- **local IP addresses**, the default route and DNS servers;
+- **filesystem/device names** and mount points;
+- the list of **system services** and any failed units;
+- CPU model, kernel version and OS details.
+
+**Where reports are stored.** By default in `./reports/` inside the project
+directory (created automatically). Use `--output` / `LDT_OUTPUT` to choose
+another location. Reports are only written when you request them (`--report`,
+`--json` or `--output`).
+
+**Before sharing a report.** Review it and redact anything you consider
+sensitive — in particular the hostname and local IP addresses.
+
+**What the toolkit does not do.** The toolkit does not modify system
+configuration, install packages, or change service states. It performs limited
+network connectivity checks and writes reports only when requested. It never
+runs `sudo`, never restarts services, never changes network or power settings,
+and never scans third-party devices. Only safe, single-shot diagnostic requests
+are used.
 
 ---
 
 ## Testing
 
-The test suite is self-contained and never modifies the system:
+The test suite is self-contained, isolated and read-only — it never modifies
+the system and never requires internet access:
 
 ```bash
 bash tests/test.sh
 ```
 
-It covers utility helpers, scoring logic, each diagnostic module, graceful
-handling of missing files/commands, report generation and every CLI flag.
+Key properties:
+
+- External commands (`df`, `ip`, `systemctl`, `getent`, `ping`, `free`,
+  `nproc`) are replaced with **mock scripts** placed first on `PATH`, giving
+  deterministic results and no real network access.
+- sysfs inputs (meminfo, os-release, thermal, hwmon, power_supply) are
+  redirected through `LDT_*` overrides, so temperature and battery logic is
+  tested against controlled fixtures.
+- A curated `PATH` missing all optional tools verifies graceful degradation.
+- The suite covers CLI flags (`--output`, `--output=`, `LDT_OUTPUT`,
+  precedence, `--no-color`, `--json`, module selection, invalid arguments),
+  report write errors, missing files/commands, systemd `running` / `degraded`
+  states, TXT and JSON generation (including special characters and `null`
+  handling).
 
 Static analysis with [ShellCheck](https://www.shellcheck.net/):
 
@@ -341,36 +499,38 @@ shellcheck -x -S style main.sh lib/*.sh modules/*.sh tests/test.sh
   systemd-based and non-systemd distributions.
 - **Init systems:** full service detail on systemd; other init systems are
   detected and handled gracefully.
-- **Bash 4.0+** is required (uses arrays, `declare -n`-free indirect expansion
-  and process substitution).
+- **Bash 4.0+** is required.
 
 ---
 
 ## Troubleshooting
 
-**Colors are not showing.**
-Output is not a terminal (piped/redirected), or `NO_COLOR`/`--no-color` is set.
-That is intentional.
+**Colors are not showing.** Output is not a terminal (piped/redirected), or
+`NO_COLOR`/`--no-color` is set. That is intentional.
 
-**"No non-loopback network interfaces found."**
-The check relies on `ip` or `/sys/class/net`. Install `iproute2` if missing.
-The toolkit does not change network settings.
+**`--output` did not create a file in older versions.** Fixed: `--output`
+(and `--json`) now imply `--report` automatically.
 
-**"DNS resolution appears to be failing." / "External connectivity check failed."**
-The machine may be offline, ICMP may be blocked, or DNS is misconfigured. These
-are informational warnings; the toolkit does not attempt to fix anything.
+**"No non-loopback network interfaces found."** The check relies on `ip` or
+`/sys/class/net`. Install `iproute2` if missing. The toolkit does not change
+network settings.
 
-**"Detailed service inspection is only supported on systemd."**
-The detected init system is not systemd. Service state is reported
-generically.
+**"Temperature information unavailable."** No readable sensors were found in
+`/sys/class/thermal` or `/sys/class/hwmon`. This is normal on many systems
+(especially VMs) and is **not** treated as a fault.
 
-**Report not written.**
-Ensure the target directory is writable. Use `--output` to choose a path, e.g.
-`--output /tmp/report.txt`. Errors are printed to stderr.
+**"No battery detected."** The machine has no battery (e.g. a desktop) or
+`/sys/class/power_supply` exposes none. This is **not** treated as a fault.
 
-**`df` output looks empty.**
-Some minimal containers expose no real filesystems; the tool reports this as a
-warning instead of failing.
+**"Detailed service inspection is only supported on systemd."** The detected
+init system is not systemd; service state is reported generically.
+
+**systemd shows `degraded`.** This is a real unit state and is now reported
+correctly (some failed unit is present). The toolkit never restarts anything.
+
+**Report not written.** Ensure the target directory is writable. Use
+`--output` to choose a path, e.g. `--output /tmp/report.txt`. Errors are
+printed to stderr and the exit code is non-zero.
 
 ---
 

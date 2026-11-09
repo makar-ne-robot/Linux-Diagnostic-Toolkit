@@ -85,12 +85,24 @@ cpu_info() {
     emit_kv "Physical cores"   "$phys"
     emit_kv "Logical cores"    "$logical"
 
+    mark_ran cpu
+    data_set cpu.model "$model"
+    data_set cpu.architecture "$arch"
+    data_set cpu.physical_cores "$phys"
+    data_set cpu.logical_cores "$logical"
+
     # Load average from /proc/loadavg.
     if has_file /proc/loadavg; then
         local l1 l5 l15 procs
         read -r l1 l5 l15 procs _ < /proc/loadavg
         emit_kv "Load average" "1m=${l1}  5m=${l5}  15m=${l15}"
         emit_kv "Processes"    "${procs} (runnable/total)"
+
+        data_set cpu.load_1 "$l1"
+        data_set cpu.load_5 "$l5"
+        data_set cpu.load_15 "$l15"
+        data_set cpu.procs_runnable "${procs%%/*}"
+        data_set cpu.procs_total "${procs##*/}"
 
         # Warn when 1-minute load exceeds the number of logical cores.
         if is_number "$logical" && (( logical > 0 )); then

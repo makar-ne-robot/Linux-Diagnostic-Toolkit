@@ -96,5 +96,15 @@ system_info() {
     fi
     emit_kv "Init system"  "$init_sys"
 
+    # Structured data for JSON export / summary.
+    mark_ran system
+    data_set system.distribution "${pretty:-$distro}"
+    data_set system.os_version "$version"
+    data_set system.kernel "$kernel"
+    data_set system.architecture "$arch"
+    data_set system.hostname "$hostname"
+    data_set system.uptime "$uptime_h"
+    data_set system.init_system "$init_sys"
+
     emit_ok "System information collected."
 }

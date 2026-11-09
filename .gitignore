@@ -1,5 +1,6 @@
 # Generated diagnostic reports
 reports/*.txt
+reports/*.json
 
 # Editor / OS clutter
 *.swp
