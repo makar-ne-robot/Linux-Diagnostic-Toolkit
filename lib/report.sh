@@ -182,24 +182,63 @@ _area_services_status() {
     fi
 }
 
+# _net_state_label VALUE - map an internal probe state to a label.
+# 1 -> ok, 0 -> failed, disabled -> disabled, anything else -> skipped.
+_net_state_label() {
+    case "$1" in
+        1)        printf 'ok' ;;
+        0)        printf 'failed' ;;
+        disabled) printf 'disabled' ;;
+        *)        printf 'skipped' ;;
+    esac
+}
+
 # _area_network_status - status for the network area.
+# Distinguishes "verified OK", "verified problem" and "could not verify":
+#   * any verified problem (failed probe, missing route/interfaces) -> WARNING
+#   * otherwise, any unverifiable check (missing tool, no timeout) -> UNKNOWN
+#   * OK is returned only when the required checks ran and found no problem.
+# User-disabled probes (--no-network-probes) are intentionally skipped and do
+# not, by themselves, degrade the status.
 _area_network_status() {
     has_ran network || { printf 'UNKNOWN'; return 0; }
-    if (( ${#NET_IFACES[@]} == 0 )) && [[ "$(data_get network.has_ip_tool)" != "1" ]]; then
+
+    local has_ip
+    has_ip="$(data_get network.has_ip_tool)"
+    if (( ${#NET_IFACES[@]} == 0 )) && [[ "$has_ip" != "1" ]]; then
         printf 'UNKNOWN'; return 0
     fi
-    local problem=0 flag
-    [[ -n "$(data_get network.default_route)" ]] || problem=1
-    for flag in network.dns_resolution network.external_reachable; do
-        if [[ "$(data_get "$flag")" == "0" ]]; then
-            problem=1
-        fi
-    done
+
+    local problem=0 unknown=0
+
+    # Interfaces: no interfaces at all is a problem when we can enumerate them.
     if (( ${#NET_IFACES[@]} == 0 )); then
         problem=1
     fi
+
+    # Default route: only verifiable when the `ip` tool is available.
+    if [[ "$has_ip" == "1" ]]; then
+        [[ -n "$(data_get network.default_route)" ]] || problem=1
+    else
+        unknown=1
+    fi
+
+    # External probes.
+    local flag val
+    for flag in network.dns_resolution network.external_reachable; do
+        val="$(data_get "$flag")"
+        case "$val" in
+            1)        : ;;         # verified OK
+            0)        problem=1 ;; # verified failure
+            disabled) : ;;         # user opted out
+            *)        unknown=1 ;; # not verified
+        esac
+    done
+
     if (( problem )); then
         printf 'WARNING'
+    elif (( unknown )); then
+        printf 'UNKNOWN'
     else
         printf 'OK'
     fi
@@ -555,6 +594,7 @@ _json_document() {
     done
     (( n > 0 )) && printf '\n    '
     printf '],\n'
+    printf '    "probes_enabled": %s,\n' "$(json_bool_or_null "$(data_get network.probes_enabled)")"
     printf '    "default_route": %s,\n' "$(json_str_or_null "$(data_get network.default_route)")"
     printf '    "dns_servers": ['
     n=${#NET_DNS_LIST[@]}
@@ -564,7 +604,9 @@ _json_document() {
     done
     printf '],\n'
     printf '    "dns_resolution": %s,\n' "$(json_bool_or_null "$(data_get network.dns_resolution)")"
-    printf '    "external_reachable": %s\n' "$(json_bool_or_null "$(data_get network.external_reachable)")"
+    printf '    "dns_probe": %s,\n' "$(json_str "$(_net_state_label "$(data_get network.dns_resolution)")")"
+    printf '    "external_reachable": %s,\n' "$(json_bool_or_null "$(data_get network.external_reachable)")"
+    printf '    "external_probe": %s\n' "$(json_str "$(_net_state_label "$(data_get network.external_reachable)")")"
     printf '  },\n'
 
     # ----- temperature -----

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Minimal permissions: the workflow only needs to read the repository.
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    name: Lint and test (Bash)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Syntax check all Bash files (bash -n)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+          echo "Checking ${#files[@]} file(s):"
+          for f in "${files[@]}"; do
+            echo "  bash -n $f"
+            bash -n "$f"
+          done
+          echo "Syntax OK."
+
+      - name: Install ShellCheck (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          tar -xJf shellcheck.tar.xz
+          echo "$PWD/shellcheck-v0.11.0" >> "$GITHUB_PATH"
+          shellcheck-v0.11.0/shellcheck --version
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck -x -S style main.sh lib/*.sh modules/*.sh tests/test.sh
+
+      - name: Run test suite
+        shell: bash
+        run: bash tests/test.sh

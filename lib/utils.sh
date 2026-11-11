@@ -208,6 +208,21 @@ is_number() {
     [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+# is_float STRING - return 0 if STRING is a finite decimal number.
+# Accepts an optional sign and optional fractional part; rejects empty
+# strings, words, "nan" and "inf".
+is_float() {
+    [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]
+}
+
+# float_gt A B - return 0 if A is strictly greater than B.
+# Uses awk for reliable fractional comparison (no `bc` dependency).
+# Non-numeric inputs are treated as 0 by awk, so callers should validate
+# with is_float() first when that matters.
+float_gt() {
+    awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 > b + 0) }'
+}
+
 # percent PART TOTAL - print integer percentage (0 when TOTAL is 0).
 percent() {
     local part="$1" total="$2"

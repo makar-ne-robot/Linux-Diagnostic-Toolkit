@@ -244,9 +244,34 @@ EOF
 write_mock_nproc() {
     cat > "$MOCKBIN/nproc" <<'EOF'
 #!/usr/bin/env bash
-echo 8
+echo "${MOCK_NPROC:-8}"
 EOF
     chmod +x "$MOCKBIN/nproc"
+}
+
+# Core tools that must be present in a self-contained PATH for module tests.
+CORE_TOOLS="bash sh env awk sed grep cat sort uniq wc tr cut head tail dirname basename date mkdir ls paste uname rm sleep"
+
+# build_netbin DIR WITH_TIMEOUT WITH_GETENT WITH_PING WITH_IP
+# Build a self-contained PATH containing only core tools plus the requested
+# network commands (mocked). This lets us exercise "tool missing" scenarios
+# without relying on the host PATH.
+build_netbin() {
+    local dir="$1" with_timeout="$2" with_getent="$3" with_ping="$4" with_ip="$5"
+    local c src
+    mkdir -p "$dir"
+    for c in $CORE_TOOLS; do
+        src="$(command -v -- "$c" 2>/dev/null)" || continue
+        [[ "$src" == /* && -x "$src" ]] && ln -sf "$src" "$dir/$c"
+    done
+    if [[ "$with_timeout" == 1 ]]; then
+        src="$(command -v -- timeout 2>/dev/null)" || true
+        [[ -n "$src" && -x "$src" ]] && ln -sf "$src" "$dir/timeout"
+    fi
+    [[ "$with_getent" == 1 ]] && cp "$MOCKBIN/getent" "$dir/getent"
+    [[ "$with_ping" == 1 ]]   && cp "$MOCKBIN/ping"   "$dir/ping"
+    [[ "$with_ip" == 1 ]]     && cp "$MOCKBIN/ip"     "$dir/ip"
+    return 0
 }
 
 # Build the curated "minimal" PATH: essential tools, but WITHOUT the optional
@@ -311,6 +336,17 @@ test_utils() {
     assert_true  "is_number accepts digits" is_number 42
     assert_false "is_number rejects text"   is_number abc
     assert_eq "hello" "$(trim '  hello  ')" "trim whitespace"
+
+    assert_true  "is_float accepts 3.9"     is_float 3.9
+    assert_true  "is_float accepts integer" is_float 4
+    assert_false "is_float rejects word"    is_float abc
+    assert_false "is_float rejects empty"   is_float ""
+    assert_false "is_float rejects nan"     is_float nan
+
+    assert_true  "float_gt 4.9 > 4"   float_gt 4.9 4
+    assert_true  "float_gt 4.1 > 4"   float_gt 4.1 4
+    assert_false "float_gt 4.0 > 4"   float_gt 4.0 4
+    assert_false "float_gt 3.9 > 4"   float_gt 3.9 4
 }
 
 # ---------------------------------------------------------------------------
@@ -386,6 +422,71 @@ test_modules() {
 }
 
 # ---------------------------------------------------------------------------
+# Tests: CPU load average comparison (fractional values).
+# ---------------------------------------------------------------------------
+# _cpu_load_has_warning - return 0 if a CPU-load warning was recorded.
+_cpu_load_has_warning() {
+    [[ "${WARNINGS[*]:-}" == *"CPU load average"* ]]
+}
+
+test_cpu_load() {
+    printf '\n[cpu load average]\n'
+
+    local lf="$WORK/loadavg"
+    local out
+    export MOCK_NPROC=4
+
+    # value expected_warning name
+    _cpu_load_case() {
+        local val="$1" expect="$2" name="$3"
+        printf '%s 0.10 0.20 1/100 1234\n' "$val" > "$lf"
+        reset_state
+        export LDT_LOADAVG="$lf"
+        with_mocks cpu_info > "$WORK/.out" 2>&1
+        out="$(cat "$WORK/.out")"
+        unset LDT_LOADAVG
+        local got=0
+        _cpu_load_has_warning && got=1
+        TESTS_RUN=$(( TESTS_RUN + 1 ))
+        if [[ "$got" == "$expect" ]]; then
+            pass "$name"
+        else
+            fail "$name (warning=$got expected=$expect)"
+        fi
+    }
+
+    _cpu_load_case "3.90" 0 "load 3.9 with 4 cores: no warning"
+    _cpu_load_case "4.00" 0 "load 4.0 with 4 cores: no warning"
+    _cpu_load_case "4.10" 1 "load 4.1 with 4 cores: warning"
+    _cpu_load_case "4.90" 1 "load 4.9 with 4 cores: warning"
+
+    # Invalid load value must not warn and must not crash.
+    printf 'not-a-number 0.1 0.2 1/100 9\n' > "$lf"
+    reset_state
+    export LDT_LOADAVG="$lf"
+    with_mocks cpu_info > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    unset LDT_LOADAVG
+    assert_contains "$out" "not a valid number" "invalid load value handled"
+    TESTS_RUN=$(( TESTS_RUN + 1 ))
+    if _cpu_load_has_warning; then fail "invalid load value adds no warning"; else pass "invalid load value adds no warning"; fi
+
+    # Unknown logical core count must skip the comparison.
+    export MOCK_NPROC=abc
+    printf '9.99 0.1 0.2 1/100 9\n' > "$lf"
+    reset_state
+    export LDT_LOADAVG="$lf"
+    with_mocks cpu_info > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    unset LDT_LOADAVG
+    assert_contains "$out" "Logical core count unknown" "unknown cores skip comparison"
+    TESTS_RUN=$(( TESTS_RUN + 1 ))
+    if _cpu_load_has_warning; then fail "unknown cores add no warning"; else pass "unknown cores add no warning"; fi
+
+    unset MOCK_NPROC
+}
+
+# ---------------------------------------------------------------------------
 # Tests: systemd states (degraded bug, running, non-systemd).
 # ---------------------------------------------------------------------------
 test_systemd() {
@@ -445,7 +546,9 @@ test_temperature() {
     out="$(cat "$WORK/.out")"
     assert_contains "$out" "x86_pkg_temp" "temperature reads thermal zone"
     assert_contains "$out" "Package id 0" "temperature reads hwmon label"
+    assert_contains "$out" "HARDWARE TEMPERATURES" "temperature section renamed"
     assert_eq "1" "$(data_get temperature.available)" "temperature available flag"
+    assert_eq "1" "$(data_get temperature.thresholds_valid)" "default thresholds valid"
     assert_true "temperature records sensor rows" test "${#TEMP_ROWS[@]}" -ge 2
     # 91C must exceed the default crit threshold (90).
     TESTS_RUN=$(( TESTS_RUN + 1 ))
@@ -467,7 +570,32 @@ test_temperature() {
     out="$(cat "$WORK/.out")"
     assert_eq "1" "$(data_get temperature.available)" "threshold override keeps data"
     assert_eq "200" "$(data_get temperature.crit_threshold)" "custom crit threshold recorded"
+    assert_eq "1" "$(data_get temperature.thresholds_valid)" "custom thresholds valid"
     assert_eq "0" "$CRIT_COUNT" "higher crit threshold avoids critical"
+
+    # Non-numeric threshold: must warn and must not classify as normal.
+    reset_state
+    LDT_HWMON_DIR="$hdir" LDT_THERMAL_DIR="$empty" LDT_TEMP_WARN=abc temperature_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_contains "$out" "Invalid temperature thresholds" "non-numeric threshold rejected"
+    assert_eq "0" "$(data_get temperature.thresholds_valid)" "non-numeric threshold flag invalid"
+    assert_not_contains "$out" "All sensors are within" "invalid thresholds not classified normal"
+    TESTS_RUN=$(( TESTS_RUN + 1 ))
+    if (( WARN_COUNT >= 1 )); then pass "invalid thresholds add a warning"; else fail "invalid thresholds add a warning"; fi
+
+    # warn >= crit must be rejected too.
+    reset_state
+    LDT_HWMON_DIR="$hdir" LDT_THERMAL_DIR="$empty" LDT_TEMP_WARN=100 LDT_TEMP_CRIT=50 temperature_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_contains "$out" "Invalid temperature thresholds" "warn >= crit rejected"
+    assert_eq "0" "$(data_get temperature.thresholds_valid)" "warn >= crit flag invalid"
+
+    # Empty/infinite-like values are rejected (source-time default is valid,
+    # so an explicit non-number is used to exercise the guard).
+    reset_state
+    LDT_HWMON_DIR="$hdir" LDT_THERMAL_DIR="$empty" LDT_TEMP_WARN=inf temperature_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_contains "$out" "Invalid temperature thresholds" "inf threshold rejected"
 }
 
 # ---------------------------------------------------------------------------
@@ -506,6 +634,87 @@ test_battery() {
     assert_contains "$out" "No battery detected" "no battery message"
     assert_eq "0" "$(data_get battery.available)" "battery unavailable flag"
     assert_eq "0" "$WARN_COUNT" "no battery is not a warning"
+}
+
+# ---------------------------------------------------------------------------
+# Tests: network probes, timeouts and status states.
+# ---------------------------------------------------------------------------
+test_network_probes() {
+    printf '\n[network probes]\n'
+
+    local BALL="$WORK/net-all" BNTO="$WORK/net-notimeout"
+    local BNG="$WORK/net-nogetent" BNP="$WORK/net-noping" BNI="$WORK/net-noip"
+    build_netbin "$BALL" 1 1 1 1
+    build_netbin "$BNTO" 0 1 1 1
+    build_netbin "$BNG"  1 0 1 1
+    build_netbin "$BNP"  1 1 0 1
+    build_netbin "$BNI"  1 1 1 0
+
+    local out
+
+    # All tools available, healthy results -> OK.
+    reset_state
+    PATH="$BALL" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "1" "$(data_get network.dns_resolution)" "all tools: dns ok"
+    assert_eq "1" "$(data_get network.external_reachable)" "all tools: ping ok"
+    assert_eq "OK" "$(_area_network_status)" "all tools: status OK"
+
+    # No timeout: probes must be skipped, not run unbounded.
+    reset_state
+    PATH="$BNTO" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "unknown" "$(data_get network.dns_resolution)" "no timeout: dns skipped"
+    assert_eq "unknown" "$(data_get network.external_reachable)" "no timeout: ping skipped"
+    assert_contains "$out" "skipped to avoid hanging" "no timeout: message shown"
+    assert_eq "UNKNOWN" "$(_area_network_status)" "no timeout: status UNKNOWN"
+
+    # No getent: DNS unverifiable, ping ok -> UNKNOWN (not OK).
+    reset_state
+    PATH="$BNG" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "unknown" "$(data_get network.dns_resolution)" "no getent: dns unknown"
+    assert_eq "1" "$(data_get network.external_reachable)" "no getent: ping ok"
+    assert_contains "$out" "'getent' not available" "no getent: message shown"
+    assert_eq "UNKNOWN" "$(_area_network_status)" "no getent: status UNKNOWN"
+
+    # No ping: external unverifiable -> UNKNOWN.
+    reset_state
+    PATH="$BNP" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "unknown" "$(data_get network.external_reachable)" "no ping: external unknown"
+    assert_contains "$out" "'ping' not available" "no ping: message shown"
+    assert_eq "UNKNOWN" "$(_area_network_status)" "no ping: status UNKNOWN"
+
+    # DNS failure -> WARNING.
+    reset_state
+    MOCK_DNS_FAIL=1 PATH="$BALL" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "0" "$(data_get network.dns_resolution)" "dns failure recorded"
+    assert_eq "WARNING" "$(_area_network_status)" "dns failure: status WARNING"
+
+    # External unreachable -> WARNING.
+    reset_state
+    MOCK_PING_FAIL=1 PATH="$BALL" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "0" "$(data_get network.external_reachable)" "ping failure recorded"
+    assert_eq "WARNING" "$(_area_network_status)" "ping failure: status WARNING"
+
+    # Probes disabled -> local checks only, status OK.
+    reset_state
+    LDT_NO_NETWORK_PROBES=1 PATH="$BALL" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "disabled" "$(data_get network.dns_resolution)" "disabled: dns disabled"
+    assert_eq "disabled" "$(data_get network.external_reachable)" "disabled: ping disabled"
+    assert_eq "0" "$(data_get network.probes_enabled)" "disabled: probes_enabled=0"
+    assert_contains "$out" "probes disabled" "disabled: message shown"
+    assert_eq "OK" "$(_area_network_status)" "disabled: status OK (local only)"
+
+    # No ip tool: route unverifiable -> UNKNOWN.
+    reset_state
+    PATH="$BNI" network_check > "$WORK/.out" 2>&1
+    out="$(cat "$WORK/.out")"
+    assert_eq "UNKNOWN" "$(_area_network_status)" "no ip: status UNKNOWN"
 }
 
 # ---------------------------------------------------------------------------
@@ -732,6 +941,34 @@ test_cli_module_selection() {
 }
 
 # ---------------------------------------------------------------------------
+# Tests: --no-network-probes CLI flag.
+# ---------------------------------------------------------------------------
+test_cli_network_flag() {
+    printf '\n[cli network probes]\n'
+
+    local out
+
+    # Disabled: no DNS probe output, message present.
+    out="$(cli --network --no-network-probes --no-color 2>&1)"
+    assert_contains "$out" "probes disabled" "cli --no-network-probes disables probes"
+    assert_not_contains "$out" "DNS resolution works" "cli disabled: no DNS probe"
+    assert_not_contains "$out" "External connectivity OK" "cli disabled: no ping probe"
+
+    # Default: probes run (mocked, no real traffic).
+    out="$(cli --network --no-color 2>&1)"
+    assert_contains "$out" "DNS resolution works" "cli default runs DNS probe"
+
+    # Environment equivalent.
+    out="$(LDT_NO_NETWORK_PROBES=1 cli --network --no-color 2>&1)"
+    assert_contains "$out" "probes disabled" "LDT_NO_NETWORK_PROBES disables probes"
+
+    # Documented in --help.
+    out="$(cli --help 2>&1)"
+    assert_contains "$out" "--no-network-probes" "help documents --no-network-probes"
+    assert_contains "$out" "hardware temperature" "help mentions hardware temperature"
+}
+
+# ---------------------------------------------------------------------------
 # Tests: missing commands (curated PATH, no optional tools, no network).
 # ---------------------------------------------------------------------------
 test_missing_commands() {
@@ -794,9 +1031,11 @@ setup_mocks
 test_utils
 test_score
 test_modules
+test_cpu_load
 test_systemd
 test_temperature
 test_battery
+test_network_probes
 test_missing_files
 test_report
 test_json
@@ -805,6 +1044,7 @@ test_cli_json
 test_cli_colors
 test_cli_invalid
 test_cli_module_selection
+test_cli_network_flag
 test_missing_commands
 test_write_errors
 

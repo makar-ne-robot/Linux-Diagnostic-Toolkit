@@ -91,10 +91,11 @@ cpu_info() {
     data_set cpu.physical_cores "$phys"
     data_set cpu.logical_cores "$logical"
 
-    # Load average from /proc/loadavg.
-    if has_file /proc/loadavg; then
+    # Load average from /proc/loadavg (override path for tests).
+    local loadavg_file="${LDT_LOADAVG:-/proc/loadavg}"
+    if has_file "$loadavg_file"; then
         local l1 l5 l15 procs
-        read -r l1 l5 l15 procs _ < /proc/loadavg
+        read -r l1 l5 l15 procs _ < "$loadavg_file"
         emit_kv "Load average" "1m=${l1}  5m=${l5}  15m=${l15}"
         emit_kv "Processes"    "${procs} (runnable/total)"
 
@@ -104,16 +105,18 @@ cpu_info() {
         data_set cpu.procs_runnable "${procs%%/*}"
         data_set cpu.procs_total "${procs##*/}"
 
-        # Warn when 1-minute load exceeds the number of logical cores.
-        if is_number "$logical" && (( logical > 0 )); then
-            local l1_int
-            l1_int="${l1%.*}"
-            if is_number "$l1_int" && (( l1_int > logical )); then
-                emit_warn "High CPU load: 1m average ($l1) exceeds logical cores ($logical)."
-                add_warning WARN "CPU load average ${l1} (1m) is above the number of logical cores (${logical})."
-            else
-                emit_ok "CPU load is within expected range."
-            fi
+        # Warn when the 1-minute load average exceeds the logical core count.
+        # The FULL fractional value is compared (e.g. 4.9 > 4 cores), not a
+        # truncated integer, and unknown/invalid inputs degrade gracefully.
+        if ! is_number "$logical" || (( logical <= 0 )); then
+            emit_muted "Logical core count unknown; load comparison skipped."
+        elif ! is_float "$l1"; then
+            emit_muted "Load average value is not a valid number; load comparison skipped."
+        elif float_gt "$l1" "$logical"; then
+            emit_warn "High CPU load: 1m average ($l1) exceeds logical cores ($logical)."
+            add_warning WARN "CPU load average ${l1} (1m) is above the number of logical cores (${logical})."
+        else
+            emit_ok "CPU load is within expected range (1m=${l1}, cores=${logical})."
         fi
     else
         emit_warn "/proc/loadavg is not available; load average skipped."

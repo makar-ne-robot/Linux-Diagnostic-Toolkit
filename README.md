@@ -44,8 +44,8 @@ reference.
 | **Memory** | Total/used/free/available RAM, swap, usage %, high-usage warnings |
 | **Disk** | Mounted filesystems, size/used/available, usage %, inode usage, >80% / >90% alerts |
 | **Services** | Init system detection, systemd manager state (incl. `degraded`), active/failed units |
-| **Network** | Interfaces and link state, IPv4/IPv6, default route, DNS resolution, external reachability |
-| **Temperature** | `/sys/class/thermal` and `/sys/class/hwmon` sensors, configurable thresholds |
+| **Network** | Interfaces and link state, IPv4/IPv6, default route, time-bounded DNS resolution and external reachability (optional) |
+| **Temperature** | Hardware temperatures from `/sys/class/thermal` and `/sys/class/hwmon`, configurable thresholds |
 | **Battery** | `/sys/class/power_supply` batteries, charge level, charging status, multiple batteries |
 
 Additional highlights:
@@ -80,7 +80,7 @@ Additional highlights:
 [5] Services diagnostics
 [6] Network diagnostics
 [7] System information
-[8] CPU temperature
+[8] Hardware temperatures
 [9] Battery diagnostics
 [10] Generate diagnostic report
 [11] Exit
@@ -200,6 +200,7 @@ Run diagnostics and write a report:
 ./main.sh --json                   # JSON report into ./reports/
 ./main.sh --full --output ./my-report.txt
 ./main.sh --full --json --output ./report.json
+./main.sh --full --no-network-probes
 ```
 
 The toolkit can be launched from **any working directory** — it always resolves
@@ -244,6 +245,7 @@ Module selection can be combined with report generation, e.g.
 | `--json` | Write a JSON report (implies `--report`). |
 | `--output PATH` | Write the report to `PATH` (implies `--report`). If `PATH` is a directory, the default timestamped filename is created inside it. Paths with spaces are supported. |
 | `--output=PATH` | Same as above, `=` form. |
+| `--no-network-probes` | Skip the external DNS (`example.com`) and ICMP (`1.1.1.1`) probes; local interface/address/route diagnostics still run. |
 | `--no-color` | Disable ANSI colored output. |
 | `-h`, `--help` | Show help and exit. |
 | `-v`, `--version` | Show version and exit. |
@@ -254,6 +256,9 @@ Notes:
   generation, so `./main.sh --full --output report.txt` creates the report.
 - An existing target file is **never overwritten silently**: a notice is
   printed to stderr before writing.
+- External network probes require a safe timeout (`timeout`). If it is not
+  available, the probes are skipped and reported as `skipped`/`UNKNOWN` rather
+  than being run unbounded.
 
 Environment variables:
 
@@ -261,6 +266,7 @@ Environment variables:
 |----------|--------|
 | `NO_COLOR` | If set to any non-empty value, colors are disabled. |
 | `LDT_OUTPUT` | Default report path; overridden by `--output`. |
+| `LDT_NO_NETWORK_PROBES` | Set to `1` to skip external network probes. |
 | `LDT_TEMP_WARN` | Temperature warning threshold in °C (default `75`). |
 | `LDT_TEMP_CRIT` | Temperature critical threshold in °C (default `90`). |
 
@@ -281,6 +287,11 @@ The score maps to one of four statuses: `HEALTHY`, `WARNING`, `CRITICAL`, or
 `UNKNOWN` (when no diagnostic data could be collected). Per-area statuses use
 the same vocabulary, and areas that could not be evaluated are shown as
 `UNKNOWN` / `UNAVAILABLE` rather than `OK`.
+
+The **Network** area is conservative: it reports `OK` only when the required
+checks actually ran and found no problem. A probe that could not be performed
+(missing `getent`/`ping`/`timeout`, or probes disabled) is treated as
+unverified and yields `UNKNOWN`; a probe that ran and failed yields `WARNING`.
 
 > Health Score is a heuristic indicator based on detected diagnostic warnings.
 > It is not an objective measurement of hardware health or overall system
@@ -343,7 +354,7 @@ The report sections are:
 5. Disk usage
 6. System services
 7. Network
-8. CPU temperature
+8. Hardware temperatures
 9. Battery
 10. Warnings (INFO / WARNING / CRITICAL)
 11. Overall assessment (status + heuristic health score)
@@ -362,7 +373,13 @@ The report sections are:
   "memory": { "total_kb": 16252928, "usage_percent": 33 },
   "disk": { "filesystems": [ { "mount": "/", "use_percent": 83 } ] },
   "services": { "manager_state": "running", "failed": 0 },
-  "network": { "dns_resolution": true, "external_reachable": true },
+  "network": {
+    "probes_enabled": true,
+    "dns_resolution": true,
+    "dns_probe": "ok",
+    "external_reachable": true,
+    "external_probe": "ok"
+  },
   "temperature": { "available": true, "sensors": [] },
   "battery": { "available": false, "batteries": [] },
   "warnings": [ { "level": "WARN", "message": "Filesystem / is 83% full." } ],
@@ -401,6 +418,9 @@ Linux-Diagnostic-Toolkit/
 ├── reports/             # generated reports (.gitkeep kept)
 ├── tests/
 │   └── test.sh          # isolated test suite with mock commands
+├── .github/
+│   └── workflows/
+│       └── ci.yml       # bash -n + ShellCheck + tests
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -429,13 +449,25 @@ diverge.
 
 ## Privacy & Security
 
-**What is collected.** All diagnostics are read from local, read-only sources:
-`/proc`, `/etc/os-release`, `/etc/resolv.conf`, `df`, `ip`, `getent`, one
-`ping`, systemd unit state, and `/sys` (thermal, hwmon, power_supply). No data
-leaves the machine.
+**What is collected.** Diagnostics are read from local, read-only sources:
+`/proc`, `/etc/os-release`, `/etc/resolv.conf`, `df`, `ip`, systemd unit
+state, and `/sys` (thermal, hwmon, power_supply).
 
-**What may appear in a report.** Reports can contain potentially sensitive or
-identifying information, including:
+**External network requests.** When network probes are enabled (the default),
+the toolkit sends a small amount of traffic off the machine:
+
+- a single **DNS lookup** for `example.com` (via `getent`), and
+- a single **ICMP echo** (one packet) to `1.1.1.1` (via `ping`).
+
+Both probes are time-bounded and are skipped automatically when a safe timeout
+mechanism (`timeout`) is unavailable. They can be disabled entirely with
+`--no-network-probes` (or `LDT_NO_NETWORK_PROBES=1`), which keeps local
+interface, address and route diagnostics but performs **no** external DNS or
+ICMP traffic. When probes are disabled, the report records the probe state as
+`disabled` rather than `ok`.
+
+**What may appear in a report.** Reports are saved locally and can contain
+potentially sensitive or identifying information, including:
 
 - the **hostname**;
 - **local IP addresses**, the default route and DNS servers;
@@ -446,7 +478,7 @@ identifying information, including:
 **Where reports are stored.** By default in `./reports/` inside the project
 directory (created automatically). Use `--output` / `LDT_OUTPUT` to choose
 another location. Reports are only written when you request them (`--report`,
-`--json` or `--output`).
+`--json` or `--output`); they are never uploaded anywhere.
 
 **Before sharing a report.** Review it and redact anything you consider
 sensitive — in particular the hostname and local IP addresses.
@@ -478,17 +510,33 @@ Key properties:
   redirected through `LDT_*` overrides, so temperature and battery logic is
   tested against controlled fixtures.
 - A curated `PATH` missing all optional tools verifies graceful degradation.
+- Network probes are exercised with self-contained mock `PATH`s covering every
+  combination of `timeout` / `getent` / `ping` / `ip` availability, DNS
+  failure, unreachable target and the `--no-network-probes` option — without
+  sending any real traffic.
 - The suite covers CLI flags (`--output`, `--output=`, `LDT_OUTPUT`,
-  precedence, `--no-color`, `--json`, module selection, invalid arguments),
-  report write errors, missing files/commands, systemd `running` / `degraded`
-  states, TXT and JSON generation (including special characters and `null`
-  handling).
+  precedence, `--no-color`, `--json`, `--no-network-probes`, module selection,
+  invalid arguments), report write errors, missing files/commands, systemd
+  `running` / `degraded` states, fractional CPU-load comparison, temperature
+  threshold validation, TXT and JSON generation (including special characters
+  and `null` handling).
 
 Static analysis with [ShellCheck](https://www.shellcheck.net/):
 
 ```bash
 shellcheck -x -S style main.sh lib/*.sh modules/*.sh tests/test.sh
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+1. `bash -n` syntax check of all Bash files;
+2. ShellCheck;
+3. `bash tests/test.sh`.
+
+The workflow uses minimal permissions (`contents: read`), a job timeout, does
+not require root and performs no real network checks.
 
 ---
 
@@ -518,6 +566,19 @@ network settings.
 **"Temperature information unavailable."** No readable sensors were found in
 `/sys/class/thermal` or `/sys/class/hwmon`. This is normal on many systems
 (especially VMs) and is **not** treated as a fault.
+
+**"Invalid temperature thresholds."** `LDT_TEMP_WARN` / `LDT_TEMP_CRIT` must be
+finite numbers with the warning value strictly below the critical value.
+Temperature readings are shown but are not classified as normal while the
+configuration is invalid.
+
+**Network shows `UNKNOWN`.** A required probe could not be performed — for
+example `getent`, `ping` or `timeout` is missing, or probes were disabled with
+`--no-network-probes`. `UNKNOWN` means "not verified", not "failed".
+
+**Network probes hang or you are offline.** External probes are time-bounded;
+if `timeout` is unavailable they are skipped. Use `--no-network-probes` to run
+local-only network diagnostics.
 
 **"No battery detected."** The machine has no battery (e.g. a desktop) or
 `/sys/class/power_supply` exposes none. This is **not** treated as a fault.

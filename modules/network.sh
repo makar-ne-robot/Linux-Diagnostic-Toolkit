@@ -57,6 +57,64 @@ _net_ipv6() {
     fi
 }
 
+# _net_run_limited SECONDS CMD... - run CMD bounded by `timeout`.
+# Returns the command's status, or 127 when no timeout mechanism is available
+# so the caller can distinguish "not run" from a real failure.
+_net_run_limited() {
+    local secs="$1"
+    shift
+    if ! has_cmd timeout; then
+        return 127
+    fi
+    timeout "$secs" "$@"
+}
+
+# _net_dns_probe - DNS resolution probe, safely time-bounded.
+# Records network.dns_resolution as 1 (ok), 0 (failed), "unknown" (skipped).
+_net_dns_probe() {
+    if ! has_cmd getent; then
+        emit_muted "'getent' not available; DNS probe skipped."
+        data_set network.dns_resolution "unknown"
+        return 0
+    fi
+    if ! has_cmd timeout; then
+        emit_muted "'timeout' not available; DNS probe skipped to avoid hanging."
+        data_set network.dns_resolution "unknown"
+        return 0
+    fi
+    if _net_run_limited 5 getent hosts "$_NET_DNS_TARGET" >/dev/null 2>&1; then
+        emit_ok "DNS resolution works (resolved $_NET_DNS_TARGET)."
+        data_set network.dns_resolution "1"
+    else
+        emit_warn "DNS resolution failed for $_NET_DNS_TARGET."
+        add_warning WARN "DNS resolution appears to be failing."
+        data_set network.dns_resolution "0"
+    fi
+}
+
+# _net_ping_probe - external ICMP reachability probe, safely time-bounded.
+# Records network.external_reachable as 1 (ok), 0 (failed), "unknown" (skipped).
+_net_ping_probe() {
+    if ! has_cmd ping; then
+        emit_muted "'ping' not available; external connectivity probe skipped."
+        data_set network.external_reachable "unknown"
+        return 0
+    fi
+    if ! has_cmd timeout; then
+        emit_muted "'timeout' not available; external connectivity probe skipped to avoid hanging."
+        data_set network.external_reachable "unknown"
+        return 0
+    fi
+    if _net_run_limited 6 ping -c 1 -W 3 "$_NET_PING_TARGET" >/dev/null 2>&1; then
+        emit_ok "External connectivity OK (ping $_NET_PING_TARGET)."
+        data_set network.external_reachable "1"
+    else
+        emit_warn "Could not reach $_NET_PING_TARGET (host may be offline or ICMP blocked)."
+        add_warning WARN "External network connectivity check failed."
+        data_set network.external_reachable "0"
+    fi
+}
+
 # network_check - run the network diagnostic.
 network_check() {
     section "7. NETWORK"
@@ -117,7 +175,7 @@ network_check() {
     fi
 
     # ------------------------------------------------------------------
-    # DNS configuration and resolution
+    # DNS configuration (local, always safe - no network traffic)
     # ------------------------------------------------------------------
     if has_file /etc/resolv.conf; then
         local ns
@@ -137,49 +195,21 @@ network_check() {
         fi
     fi
 
-    if has_cmd getent; then
-        if has_cmd timeout; then
-            if timeout 5 getent hosts "$_NET_DNS_TARGET" >/dev/null 2>&1; then
-                emit_ok "DNS resolution works (resolved $_NET_DNS_TARGET)."
-                data_set network.dns_resolution "1"
-            else
-                emit_warn "DNS resolution failed for $_NET_DNS_TARGET."
-                add_warning WARN "DNS resolution appears to be failing."
-                data_set network.dns_resolution "0"
-            fi
-        elif getent hosts "$_NET_DNS_TARGET" >/dev/null 2>&1; then
-            emit_ok "DNS resolution works."
-            data_set network.dns_resolution "1"
-        else
-            emit_warn "DNS resolution failed for $_NET_DNS_TARGET."
-            add_warning WARN "DNS resolution appears to be failing."
-            data_set network.dns_resolution "0"
-        fi
-    else
-        emit_muted "getent not available; DNS resolution check skipped."
-    fi
+    # ------------------------------------------------------------------
+    # External probes (DNS + ICMP). These send traffic off the machine, so
+    # they are time-bounded and can be disabled entirely.
+    # ------------------------------------------------------------------
+    local probes_disabled=0
+    [[ "${LDT_NO_NETWORK_PROBES:-0}" == "1" ]] && probes_disabled=1
 
-    # ------------------------------------------------------------------
-    # External reachability (single ICMP echo)
-    # ------------------------------------------------------------------
-    if has_cmd ping; then
-        local ping_ok=0
-        if has_cmd timeout; then
-            if timeout 6 ping -c 1 -W 3 "$_NET_PING_TARGET" >/dev/null 2>&1; then
-                ping_ok=1
-            fi
-        elif ping -c 1 -W 3 "$_NET_PING_TARGET" >/dev/null 2>&1; then
-            ping_ok=1
-        fi
-        if (( ping_ok )); then
-            emit_ok "External connectivity OK (ping $_NET_PING_TARGET)."
-            data_set network.external_reachable "1"
-        else
-            emit_warn "Could not reach $_NET_PING_TARGET (host may be offline or ICMP blocked)."
-            add_warning WARN "External network connectivity check failed."
-            data_set network.external_reachable "0"
-        fi
+    if (( probes_disabled )); then
+        emit_muted "External network probes disabled (--no-network-probes)."
+        data_set network.probes_enabled "0"
+        data_set network.dns_resolution "disabled"
+        data_set network.external_reachable "disabled"
     else
-        emit_muted "ping not available; external connectivity check skipped."
+        data_set network.probes_enabled "1"
+        _net_dns_probe
+        _net_ping_probe
     fi
 }

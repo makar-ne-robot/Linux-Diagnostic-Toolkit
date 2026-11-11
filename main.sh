@@ -49,7 +49,10 @@ OPT_FULL=0
 OPT_REPORT=0
 OPT_JSON=0
 OPT_NOCOLOR=0
+OPT_NO_NETWORK_PROBES=0
 LDT_OUTPUT="${LDT_OUTPUT:-}"
+# Disable external network probes via environment as well as the CLI flag.
+LDT_NO_NETWORK_PROBES="${LDT_NO_NETWORK_PROBES:-0}"
 # Selected individual modules (canonical names), empty means "not selected".
 declare -a SELECTED_MODULES=()
 
@@ -77,7 +80,7 @@ DIAGNOSTIC SCOPE:
     --disk            Run only the disk module.
     --services        Run only the services module.
     --network         Run only the network module.
-    --temperature     Run only the CPU temperature module.
+    --temperature     Run only the hardware temperature module.
     --battery         Run only the battery module.
     (Module flags can be combined, e.g. --disk --memory.)
 
@@ -87,6 +90,11 @@ OUTPUT:
     --output PATH     Write the report to PATH (implies --report).
                       If PATH is a directory, the default timestamped
                       filename is created inside it. Supports spaces.
+    --no-network-probes
+                      Skip external DNS and ICMP probes (example.com /
+                      1.1.1.1). Local interface, address and route
+                      diagnostics still run. Useful for offline or
+                      privacy-sensitive environments.
     --no-color        Disable ANSI colored output.
     -h, --help        Show this help and exit.
     -v, --version     Show version and exit.
@@ -99,14 +107,16 @@ EXAMPLES:
     ./main.sh --full --json --output ./report.json
     ./main.sh --disk --memory
     ./main.sh --cpu --temperature
+    ./main.sh --full --no-network-probes
     ./main.sh --full --output ./my-report.txt
     ./main.sh --full --no-color
 
 ENVIRONMENT:
-    NO_COLOR       If set (non-empty), disables colors.
-    LDT_OUTPUT     Default report path (overridden by --output).
-    LDT_TEMP_WARN  Temperature warning threshold in C (default 75).
-    LDT_TEMP_CRIT  Temperature critical threshold in C (default 90).
+    NO_COLOR              If set (non-empty), disables colors.
+    LDT_OUTPUT            Default report path (overridden by --output).
+    LDT_NO_NETWORK_PROBES Set to 1 to skip external network probes.
+    LDT_TEMP_WARN         Temperature warning threshold in C (default 75).
+    LDT_TEMP_CRIT         Temperature critical threshold in C (default 90).
 EOF
 }
 
@@ -133,6 +143,7 @@ parse_args() {
             --report)      OPT_REPORT=1 ;;
             --json)        OPT_JSON=1; OPT_REPORT=1 ;;
             --no-color)    OPT_NOCOLOR=1 ;;
+            --no-network-probes) OPT_NO_NETWORK_PROBES=1 ;;
             --system)      SELECTED_MODULES+=(system) ;;
             --cpu)         SELECTED_MODULES+=(cpu) ;;
             --memory)      SELECTED_MODULES+=(memory) ;;
@@ -174,6 +185,11 @@ parse_args() {
     # A non-empty output path implies report generation.
     if [[ -n "$LDT_OUTPUT" ]]; then
         OPT_REPORT=1
+    fi
+
+    # Propagate the network-probe preference to the modules.
+    if (( OPT_NO_NETWORK_PROBES )); then
+        LDT_NO_NETWORK_PROBES=1
     fi
 }
 
@@ -254,7 +270,7 @@ interactive_menu() {
         printf '%s[5]%s Services diagnostics\n'         "${C_CYAN:-}" "${C_RESET:-}"
         printf '%s[6]%s Network diagnostics\n'          "${C_CYAN:-}" "${C_RESET:-}"
         printf '%s[7]%s System information\n'           "${C_CYAN:-}" "${C_RESET:-}"
-        printf '%s[8]%s CPU temperature\n'              "${C_CYAN:-}" "${C_RESET:-}"
+        printf '%s[8]%s Hardware temperatures\n'       "${C_CYAN:-}" "${C_RESET:-}"
         printf '%s[9]%s Battery diagnostics\n'          "${C_CYAN:-}" "${C_RESET:-}"
         printf '%s[10]%s Generate diagnostic report\n'  "${C_CYAN:-}" "${C_RESET:-}"
         printf '%s[11]%s Exit\n'                        "${C_CYAN:-}" "${C_RESET:-}"
@@ -308,6 +324,8 @@ main() {
 
     # Export the resolved output path for the report layer.
     export LDT_OUTPUT
+    # Export the network-probe preference for the network module.
+    export LDT_NO_NETWORK_PROBES
 
     # Decide whether a non-interactive run was requested.
     local noninteractive=0
